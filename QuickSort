@@ -28,9 +28,9 @@ class QuickSort {
                 products[j] = temp;
             }
         }
-        Product temp = products[i + 1];
-        products[i + 1] = products[high];
-        products[high] = temp;
+        Product temp = products[high];
+        products[high] = products[i + 1];
+        products[i + 1] = temp;
         return i + 1;
     }
 }
