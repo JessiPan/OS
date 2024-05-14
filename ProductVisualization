@@ -1,0 +1,384 @@
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellRenderer;
+import java.awt.*;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.Transferable;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.KeyAdapter;
+import java.awt.event.KeyEvent;
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class ProductVisualization extends JFrame {
+    private DefaultTableModel model;
+    private List<Product> productList;
+    private String[] columnNames = {"名称", "价格", "卡路里", ""}; // 修改列数为4
+    private int currentPage = 0;
+    private int pageSize = 50;
+    private JLabel pageInfoLabel;
+    private JTextField minCaloriesField;
+    private JTextField maxCaloriesField;
+    private JTextField pageNumField;
+    private JButton ascendingButton;
+    private boolean ascending = true;
+
+    private List<Product> favorites = new ArrayList<>();
+    private DefaultTableModel favoritesModel;
+    private JTable favoritesTable;
+
+    public ProductVisualization() {
+        setTitle("饮食推荐");
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setSize(900, 600);
+        setLocationRelativeTo(null);
+
+        // 创建表格
+        model = new DefaultTableModel();
+        model.setColumnIdentifiers(columnNames);
+        JTable table = new JTable(model) {
+            public Class getColumnClass(int column) {
+                return (column == 3) ? getValueAt(0, 3).getClass() : super.getColumnClass(column);
+            }
+        };
+        table.getColumn("").setCellRenderer(new ButtonRenderer());
+        table.getColumn("").setCellEditor(new ButtonEditor(new JCheckBox(), false));
+        table.setDragEnabled(true);
+        table.setTransferHandler(new TransferHandler() {
+            @Override
+            public boolean canImport(TransferHandler.TransferSupport support) {
+                return support.isDataFlavorSupported(DataFlavor.stringFlavor);
+            }
+
+            @Override
+            public boolean importData(TransferHandler.TransferSupport support) {
+                try {
+                    String data = (String) support.getTransferable().getTransferData(DataFlavor.stringFlavor);
+                    int row = Integer.parseInt(data);
+                    addToFavorites(row);
+                    return true;
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        });
+        JScrollPane scrollPane = new JScrollPane(table);
+        add(scrollPane, BorderLayout.CENTER);
+
+        // 创建分页按钮
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        JButton prevButton = new JButton("上一页");
+        prevButton.addActionListener(e -> showPreviousPage());
+        buttonPanel.add(prevButton);
+
+        pageInfoLabel = new JLabel();
+        buttonPanel.add(pageInfoLabel);
+
+        JButton nextButton = new JButton("下一页");
+        nextButton.addActionListener(e -> showNextPage());
+        buttonPanel.add(nextButton);
+
+        pageNumField = new JTextField(5);
+        pageNumField.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER) {
+                    jumpToPage();
+                }
+            }
+        });
+        buttonPanel.add(new JLabel("跳转至第"));
+        buttonPanel.add(pageNumField);
+        buttonPanel.add(new JLabel("页"));
+
+        add(buttonPanel, BorderLayout.SOUTH);
+
+        // 根据卡路里筛选食物
+        JPanel filterPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        filterPanel.add(new JLabel("最低卡路里："));
+        minCaloriesField = new JTextField(5);
+        filterPanel.add(minCaloriesField);
+        filterPanel.add(new JLabel("最高卡路里："));
+        maxCaloriesField = new JTextField(5);
+        filterPanel.add(maxCaloriesField);
+
+        JButton filterButton = new JButton("筛选");
+        filterButton.addActionListener(e -> filterByCalories());
+        filterPanel.add(filterButton);
+        add(filterPanel, BorderLayout.NORTH);
+
+        // 升序/降序按钮
+        ascendingButton = new JButton("升序");
+        ascendingButton.addActionListener(e -> changeSortingOrder());
+        add(ascendingButton, BorderLayout.WEST);
+
+        // 读取数据并显示
+        readDataFromFile("products.txt");
+        showPage(currentPage);
+
+        // 创建喜爱列表
+        createFavoritesPanel();
+    }
+
+    private void createFavoritesPanel() {
+        JPanel favoritesPanel = new JPanel(new BorderLayout());
+        favoritesPanel.setBorder(BorderFactory.createTitledBorder("当日喜爱列表"));
+
+        favoritesModel = new DefaultTableModel();
+        favoritesModel.setColumnIdentifiers(columnNames);
+        favoritesTable = new JTable(favoritesModel) {
+            public Class getColumnClass(int column) {
+                return (column == 3) ? getValueAt(0, 3).getClass() : super.getColumnClass(column);
+            }
+        };
+        favoritesTable.getColumn("").setCellRenderer((TableCellRenderer) new ButtonRenderer());
+        favoritesTable.getColumn("").setCellEditor(new ButtonEditor(new JCheckBox(), true));
+        JScrollPane favoritesScrollPane = new JScrollPane(favoritesTable);
+        favoritesPanel.add(favoritesScrollPane, BorderLayout.CENTER);
+
+        JButton saveButton = new JButton("保存");
+        saveButton.addActionListener(e -> {
+            saveFavoritesToFile();
+            JOptionPane.showMessageDialog(this, "喜爱列表已保存。", "保存成功", JOptionPane.INFORMATION_MESSAGE);
+        });
+        favoritesPanel.add(saveButton, BorderLayout.SOUTH);
+
+        add(favoritesPanel, BorderLayout.EAST);
+    }
+
+    private void readDataFromFile(String fileName) {
+        productList = new ArrayList<>();
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader(fileName));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split(" - ");
+                if (parts.length == 3) {
+                    String name = parts[0];
+                    double price = Double.parseDouble(parts[1].substring(1)); // 去掉"$"
+                    int calories = Integer.parseInt(parts[2].split(" ")[0]);
+                    productList.add(new Product(name, price, calories));
+                }
+            }
+            reader.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void showPage(int page) {
+        int fromIndex = page * pageSize;
+        int toIndex = Math.min(fromIndex + pageSize, productList.size());
+        List<Product> currentPageList = productList.subList(fromIndex, toIndex);
+        displayData(currentPageList);
+
+        int totalPages = (int) Math.ceil((double) productList.size() / pageSize);
+        pageInfoLabel.setText((page + 1) + "/" + totalPages);
+        pageNumField.setText(String.valueOf(page + 1));
+    }
+
+    private void displayData(List<Product> dataList) {
+        model.setRowCount(0);
+        for (int i = 0; i < dataList.size(); i++) {
+            Product product = dataList.get(i);
+            Object[] row = {product.getName(), product.getPrice(), product.getCalories(), "添加"};
+            model.addRow(row);
+        }
+    }
+
+    private void showPreviousPage() {
+        if (currentPage > 0) {
+            currentPage--;
+            showPage(currentPage);
+        }
+    }
+
+    private void showNextPage() {
+        int totalPages = (int) Math.ceil((double) productList.size() / pageSize);
+        if (currentPage < totalPages - 1) {
+            currentPage++;
+            showPage(currentPage);
+        }
+    }
+
+    private void jumpToPage() {
+        try {
+            int pageNum = Integer.parseInt(pageNumField.getText()) - 1;
+            if (pageNum >= 0 && pageNum < (int) Math.ceil((double) productList.size() / pageSize)) {
+                currentPage = pageNum;
+                showPage(currentPage);
+            } else {
+                JOptionPane.showMessageDialog(this, "请输入有效的页数。", "错误", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, "请输入有效的页数。", "错误", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void filterByCalories() {
+        try {
+            int minCalories = Integer.parseInt(minCaloriesField.getText());
+            int maxCalories = Integer.parseInt(maxCaloriesField.getText());
+
+            List<Product> filteredList = productList.stream()
+                    .filter(product -> product.getCalories() >= minCalories && product.getCalories() <= maxCalories)
+                    .collect(Collectors.toList());
+
+            showPage(0);
+            displayData(filteredList);
+            int totalPages = (int) Math.ceil((double) filteredList.size() / pageSize);
+            pageInfoLabel.setText("1/" + totalPages);
+            pageNumField.setText("1");
+            currentPage = 0;
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, "请输入有效的卡路里数。", "错误", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void changeSortingOrder() {
+        ascending = !ascending;
+        ascendingButton.setText(ascending ? "升序" : "降序");
+        productList.sort(ascending ? Comparator.comparing(Product::getCalories) : Comparator.comparing(Product::getCalories).reversed());
+        showPage(0);
+    }
+
+    private void addToFavorites(int row) {
+        String name = (String) model.getValueAt(row, 0);
+        double price = (double) model.getValueAt(row, 1);
+        int calories = (int) model.getValueAt(row, 2);
+
+        // 检查是否已经在喜爱列表中
+        if (!isInFavorites(name)) {
+            favorites.add(new Product(name, price, calories));
+            displayFavorites();
+        }
+    }
+
+    private boolean isInFavorites(String name) {
+        for (Product product : favorites) {
+            if (product.getName().equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void removeFromFavorites(int row) {
+        favorites.remove(row);
+        displayFavorites();
+    }
+
+    private void displayFavorites() {
+        favoritesModel.setRowCount(0);
+        for (Product product : favorites) {
+            Object[] row = {product.getName(), product.getPrice(), product.getCalories(), "删除"};
+            favoritesModel.addRow(row);
+        }
+    }
+
+    private void saveFavoritesToFile() {
+        try {
+            FileWriter writer = new FileWriter("favorites.txt");
+            SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
+            writer.write("日期: " + dateFormat.format(new Date()) + "\n");
+            for (Product product : favorites) {
+                writer.write(product.getName() + " - $" + product.getPrice() + " - " + product.getCalories() + "\n");
+            }
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    class ButtonRenderer extends JButton implements TableCellRenderer {
+        public ButtonRenderer() {
+            setOpaque(true);
+        }
+
+        public Component getTableCellRendererComponent(JTable table, Object value,
+                                                       boolean isSelected, boolean hasFocus, int row, int column) {
+            if (isSelected) {
+                setForeground(table.getSelectionForeground());
+                setBackground(table.getSelectionBackground());
+            } else {
+                setForeground(table.getForeground());
+                setBackground(UIManager.getColor("Button.background"));
+            }
+            setText((value == null) ? "" : value.toString());
+            return this;
+        }
+    }
+
+    class ButtonEditor extends DefaultCellEditor {
+        protected JButton button;
+        private String label;
+        private boolean isPushed;
+        private int row;
+        private boolean isFavorites;
+
+        public ButtonEditor(JCheckBox checkBox, boolean isFavorites) {
+            super(checkBox);
+            this.isFavorites = isFavorites;
+            button = new JButton();
+            button.setOpaque(true);
+            button.addActionListener(new ActionListener() {
+                public void actionPerformed(ActionEvent e) {
+                    fireEditingStopped();
+                }
+            });
+        }
+
+        public Component getTableCellEditorComponent(JTable table, Object value,
+                                                     boolean isSelected, int row, int column) {
+            this.row = row;
+            if (isSelected) {
+                button.setForeground(table.getSelectionForeground());
+                button.setBackground(table.getSelectionBackground());
+            } else {
+                button.setForeground(table.getForeground());
+                button.setBackground(table.getBackground());
+            }
+            label = (value == null) ? "" : value.toString();
+            button.setText(label);
+            isPushed = true;
+            return button;
+        }
+
+        public Object getCellEditorValue() {
+            if (isPushed) {
+                if (isFavorites) {
+                    removeFromFavorites(row);
+                } else {
+                    addToFavorites(row);
+                }
+            }
+            isPushed = false;
+            return new String(label);
+        }
+
+        public boolean stopCellEditing() {
+            isPushed = false;
+            return super.stopCellEditing();
+        }
+
+        protected void fireEditingStopped() {
+            super.fireEditingStopped();
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            ProductVisualization visualization = new ProductVisualization();
+            visualization.setVisible(true);
+        });
+    }
+}
